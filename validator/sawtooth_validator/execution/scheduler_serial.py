@@ -14,6 +14,7 @@
 # ------------------------------------------------------------------------------
 
 import queue
+import logging
 from threading import Condition
 
 from sawtooth_validator.execution.scheduler import BatchExecutionResult
@@ -21,6 +22,8 @@ from sawtooth_validator.execution.scheduler import TxnInformation
 from sawtooth_validator.execution.scheduler import Scheduler
 from sawtooth_validator.execution.scheduler import SchedulerIterator
 from sawtooth_validator.execution.scheduler_exceptions import SchedulerError
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SerialScheduler(Scheduler):
@@ -109,13 +112,17 @@ class SerialScheduler(Scheduler):
                                      " new batches")
             batch_signature = batch.header_signature
             if state_hash is not None:
+                LOGGER.info('JLJ: Add state root hash to required')
                 self._required_state_hashes[batch_signature] = state_hash
             batch_length = len(batch.transactions)
             for idx, txn in enumerate(batch.transactions):
                 if idx == batch_length - 1:
+                    LOGGER.info('JLJ: Transaction %d is last in batch', idx + 1)
                     self._last_in_batch.append(txn.header_signature)
                 self._txn_to_batch[txn.header_signature] = batch_signature
+                LOGGER.info('JLJ: Add transaction %d to queue', idx+1)
                 self._txn_queue.put(txn)
+            LOGGER.info('JLJ: Notify all added to batch')
             self._condition.notify_all()
 
     def get_batch_execution_result(self, batch_signature):
@@ -133,26 +140,33 @@ class SerialScheduler(Scheduler):
     def next_transaction(self):
         with self._condition:
             if self._in_progress_transaction is not None:
+                LOGGER.info('JLJ: Transaction %s already in progress', self._in_progress_transaction[:8])
                 return None
             try:
                 txn = self._txn_queue.get(block=False)
             except queue.Empty:
+                LOGGER.info('JLJ: Transaction queue is empty')
                 return None
 
+            LOGGER.info('JLJ: Make %s in-progress transaction', txn.header_signature[:8])
             self._in_progress_transaction = txn.header_signature
             base_contexts = [] if self._previous_context_id is None \
                 else [self._previous_context_id]
             txn_info = TxnInformation(txn=txn,
                                       state_hash=self._previous_state_hash,
                                       base_context_ids=base_contexts)
+            LOGGER.info('JLJ: Add %s to scheduled transactions', txn.header_signature[:8])
             self._scheduled_transactions.append(txn_info)
             return txn_info
 
     def finalize(self):
         with self._condition:
+            LOGGER.info('JLJ: Scheduler has been finalized')
             self._final = True
             if len(self._batch_statuses) == len(self._last_in_batch):
+                LOGGER.info('JLJ: Finalized scheduler has also completed')
                 self._complete = True
+            LOGGER.info('JLJ: Notify everyone of finalized scheduler')
             self._condition.notify_all()
 
     def _compute_merkle_root(self, required_state_root):
@@ -204,10 +218,12 @@ class SerialScheduler(Scheduler):
                     break
 
     def _calculate_state_root_if_required(self, batch_id):
+        LOGGER.info('JLJ: Get required state root hash')
         required_state_hash = self._required_state_hashes.get(
             batch_id)
         state_hash = None
         if required_state_hash is not None:
+            LOGGER.info('JLJ: Compute merkle root')
             state_hash = self._compute_merkle_root(required_state_hash)
             self._already_calculated = True
         return state_hash
@@ -215,12 +231,16 @@ class SerialScheduler(Scheduler):
     def complete(self, block):
         with self._condition:
             if not self._final:
+                LOGGER.info('JLJ: Scheduler has not been finalized')
                 return False
             if self._complete:
+                LOGGER.info('JLJ: Scheduler is complete')
                 self._calculate_state_root_if_not_already_done()
                 return True
             if block:
+                LOGGER.info('JLJ: Block until complete')
                 self._condition.wait_for(lambda: self._complete)
+                LOGGER.info('JLJ: Calculate state root hash')
                 self._calculate_state_root_if_not_already_done()
                 return True
             return False

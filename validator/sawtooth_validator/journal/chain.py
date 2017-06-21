@@ -124,6 +124,7 @@ class BlockValidator(object):
             txn_hdr = TransactionHeader()
             txn_hdr.ParseFromString(txn.header)
             for dep in txn_hdr.dependencies:
+                LOGGER.info('JLJ: Verify dependency in %s committed', dep[:8])
                 if dep not in committed_txn:
                     LOGGER.debug("Block rejected due missing" +
                                  " transaction dependency, transaction %s"
@@ -135,29 +136,43 @@ class BlockValidator(object):
 
     def _verify_block_batches(self, blkw, committed_txn):
         if blkw.block.batches:
-
+            LOGGER.info('JLJ: Get previous block root state hash: %s', blkw)
             prev_state = self._get_previous_block_root_state_hash(blkw)
+            LOGGER.info('JLJ: Create squash handler scheduler: %s', blkw)
             scheduler = self._executor.create_scheduler(
                 self._squash_handler, prev_state)
+            LOGGER.info('JLJ: Execute squash handler scheduler: %s', blkw)
             self._executor.execute(scheduler)
 
             for i in range(len(blkw.block.batches) - 1):
                 batch = blkw.batches[i]
+                LOGGER.info('JLJ: Verify batch (%d) dependencies: %s', i+1, blkw)
                 if not self._verify_batches_dependencies(batch, committed_txn):
+                    LOGGER.info('JLJ: Batch (%d) dependencies failed: %s',
+                                i + 1, blkw)
                     return False
+                LOGGER.info('JLJ: Add batch (%d) to scheduler: %s', i+1, blkw)
                 scheduler.add_batch(batch)
 
+            LOGGER.info('JLJ: Verify batch (%d) dependencies: %s', len(blkw.block.batches), blkw)
             batch = blkw.batches[-1]
             if not self._verify_batches_dependencies(batch, committed_txn):
+                LOGGER.info('JLJ: Batch (%d) dependencies failed: %s',
+                            len(blkw.block.batches), blkw)
                 scheduler.cancel()
                 return False
+            LOGGER.info('JLJ: Add batch (%d) to scheduler: %s', len(blkw.block.batches), blkw)
             scheduler.add_batch(batch,
                                 blkw.state_root_hash)
 
+            LOGGER.info('JLJ: Finalize scheduler: %s', blkw)
             scheduler.finalize()
+            LOGGER.info('JLJ: Complete scheduler: %s', blkw)
             scheduler.complete(block=True)
+            LOGGER.info('JLJ: Scheduler completed: %s', blkw)
             state_hash = None
             for i in range(len(blkw.batches)):
+                LOGGER.info('JLJ: Get batch (%d) execution result: %s', i+1, blkw)
                 result = scheduler.get_batch_execution_result(
                     blkw.batches[i].header_signature)
                 # If the result is None, the executor did not
@@ -165,20 +180,28 @@ class BlockValidator(object):
                 if result is not None and result.is_valid:
                     state_hash = result.state_hash
                 else:
+                    LOGGER.info('JLJ: Batch (%d) execution failed: %s',
+                                i + 1, blkw)
                     return False
             if blkw.state_root_hash != state_hash:
+                LOGGER.info('JLJ: State root has failed to match: %s', blkw)
                 return False
+
+        LOGGER.info('JLJ: Block batches verified: %s', blkw)
         return True
 
     def validate_block(self, blkw, committed_txn):
         try:
             if blkw.status == BlockStatus.Valid:
+                LOGGER.info("JLJ: Block already determined valid: %s", blkw)
                 return True
             elif blkw.status == BlockStatus.Invalid:
+                LOGGER.info("JLJ: Block already determined invalid: %s", blkw)
                 return False
             else:
                 valid = True
 
+                LOGGER.info("JLJ: Create block verifier: %s", blkw)
                 consensus = self._consensus_module.\
                     BlockVerifier(block_cache=self._block_cache,
                                   state_view_factory=self._state_view_factory,
@@ -187,9 +210,11 @@ class BlockValidator(object):
                                   validator_id=self._identity_public_key)
 
                 if valid:
+                    LOGGER.info("JLJ: Verify block batches: %s", blkw)
                     valid = self._verify_block_batches(blkw, committed_txn)
 
                 if valid:
+                    LOGGER.info("JLJ: Consensus verify block: %s", blkw)
                     valid = consensus.verify_block(blkw)
 
                 blkw.status = BlockStatus.Valid if \
@@ -315,16 +340,19 @@ class BlockValidator(object):
 
             # 1) Find the common ancestor block, the root of the fork.
             # walk back till both chains are the same height
+            LOGGER.info("JLJ: Find common height: %s", self._new_block)
             (new_blkw, cur_blkw) = self._find_common_height(new_chain,
                                                             cur_chain)
 
             # 2) Walk back until we find the common ancestor
+            LOGGER.info("JLJ: Find common ancestor: %s", self._new_block)
             self._find_common_ancestor(new_blkw, cur_blkw,
                                        new_chain, cur_chain)
 
             # 3) Determine the validity of the new fork
             # build the transaction cache to simulate the state of the
             # chain at the common root.
+            LOGGER.info("JLJ: Create transaction cache: %s", self._new_block)
             committed_txn = TransactionCache(self._block_cache.block_store)
             for block in cur_chain:
                 for batch in block.batches:
@@ -333,6 +361,7 @@ class BlockValidator(object):
             valid = True
             for block in reversed(new_chain):
                 if valid:
+                    LOGGER.info("JLJ: Validate block: %s", block)
                     if not self.validate_block(block, committed_txn):
                         LOGGER.info("Block validation failed: %s", block)
                         valid = False
@@ -347,15 +376,18 @@ class BlockValidator(object):
 
             # 4) Evaluate the 2 chains to see if the new chain should be
             # committed
+            LOGGER.info("JLJ: Test commit new chain: %s", self._new_block)
             commit_new_chain = self._test_commit_new_chain()
 
             # 5) Consensus to compute batch sets (only if we are switching).
+            LOGGER.info("JLJ: Compute batch change: %s", self._new_block)
             if commit_new_chain:
                 (self._result["committed_batches"],
                  self._result["uncommitted_batches"]) =\
                     self._compute_batch_change(new_chain, cur_chain)
 
             # 6) Tell the journal we are done.
+            LOGGER.info("JLJ: Execute journal done callback: %s", self._new_block)
             self._done_cb(commit_new_chain,
                           self._result)
             LOGGER.info("Finished block validation of: %s",
