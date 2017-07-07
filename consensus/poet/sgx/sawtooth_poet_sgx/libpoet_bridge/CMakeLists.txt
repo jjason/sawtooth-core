@@ -14,7 +14,12 @@
 # ------------------------------------------------------------------------------
 
 CMAKE_MINIMUM_REQUIRED(VERSION 3.2 FATAL_ERROR)
-PROJECT(libpoet-bridge C CXX)
+
+IF(${SGX_USE_SIMULATOR})
+    PROJECT(libpoet-bridge-simulator C CXX)
+ELSE()
+    PROJECT(libpoet-bridge C CXX)
+ENDIF()
 
 # XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 # Source Code

@@ -14,7 +14,12 @@
 # ------------------------------------------------------------------------------
 
 CMAKE_MINIMUM_REQUIRED(VERSION 3.2 FATAL_ERROR)
-PROJECT(libpoet-enclave C CXX)
+
+IF(${SGX_USE_SIMULATOR})
+    PROJECT(libpoet-enclave-simulator C CXX)
+ELSE()
+    PROJECT(libpoet-enclave C CXX)
+ENDIF()
 
 # XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 # Source Code

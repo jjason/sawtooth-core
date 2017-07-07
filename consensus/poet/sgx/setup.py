@@ -21,10 +21,14 @@ import sysconfig
 
 from setuptools import setup, Extension, find_packages
 from distutils.command import build as build_module
+from distutils.command import build_ext as build_ext_module
 from shutil import copyfile
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
 
+is_simulator_build = '--simulator' in sys.argv
+if is_simulator_build:
+    sys.argv.remove('--simulator')
 
 def bump_version(version):
     (major, minor, patch) = version.split('.')
@@ -75,23 +79,39 @@ if os.name == 'nt':
     platform_dir = 'windows'
     package_data = []
 
-    ext_deps = ['deps/bin/libpoet-bridge.dll',
-                'deps/bin/libpoet-enclave.signed.dll',
-                'deps/bin/msvcp110.dll',
-                'deps/bin/msvcr110.dll']
+    if is_simulator_build:
+        ext_deps = ['deps/bin/libpoet-bridge-simulator.dll',
+                    'deps/bin/libpoet-enclave-simulator.signed.dll']
+        libraries = ['libpoet-bridge-simulator']
+    else:
+        ext_deps = ['deps/bin/libpoet-bridge.dll',
+                    'deps/bin/libpoet-enclave.signed.dll']
+        libraries = ['libpoet-bridge']
+
+    ext_deps += ['deps/bin/msvcp110.dll',
+                 'deps/bin/msvcr110.dll']
     for f in ext_deps:
         package_data.append(os.path.basename(f))
     extra_compile_args = ['/EHsc']
-    libraries = ['json-c', 'cryptopp-static', 'libpoet-bridge']
+    libraries += ['json-c', 'cryptopp-static']
     include_dirs = ['deps/include']
 
 else:
     platform_dir = 'linux'
-    extra_compile_args = ['-std=c++11']
-    libraries = ['json-c', 'crypto++', 'poet-bridge']
-    ext_deps = ['deps/bin/libpoet-bridge.so',
-                'deps/bin/libpoet-enclave.signed.so']
     package_data = []
+
+    if is_simulator_build:
+        ext_deps = ['deps/bin/libpoet-bridge-simulator.so',
+                    'deps/bin/libpoet-enclave-simulator.signed.so']
+        libraries = ['poet-bridge-simulator']
+    else:
+        ext_deps = ['deps/bin/libpoet-bridge.so',
+                    'deps/bin/libpoet-enclave.signed.so']
+        libraries = ['poet-bridge']
+
+    extra_compile_args = ['-std=c++11']
+    libraries += ['json-c', 'crypto++']
+
     include_dirs = []
 
 include_dirs += ['sawtooth_poet_sgx/poet_enclave_sgx',
@@ -100,7 +120,17 @@ include_dirs += ['sawtooth_poet_sgx/poet_enclave_sgx',
                  'sawtooth_poet_sgx/libpoet_shared/{}'.format(platform_dir)]
 library_dirs = ['deps/lib']
 
-enclavemod = Extension('_poet_enclave',
+swig_opts = ['-c++']
+
+if is_simulator_build:
+    enclave_module_name = '_poet_enclave_simulator'
+    package_name = 'sawtooth-poet-simulator'
+    swig_opts += ['-DSGX_USE_SIMULATOR']
+else:
+    enclave_module_name = '_poet_enclave'
+    package_name = 'sawtooth-poet-sgx'
+
+enclavemod = Extension(enclave_module_name,
                        ['sawtooth_poet_sgx/poet_enclave_sgx/poet_enclave.i',
                         'sawtooth_poet_sgx/poet_enclave_sgx/common.cpp',
                         'sawtooth_poet_sgx/poet_enclave_sgx/poet.cpp',
@@ -113,7 +143,7 @@ enclavemod = Extension('_poet_enclave',
                         'sawtooth_poet_sgx/libpoet_shared/{}/c11_support.cpp'.format(
                             platform_dir)
                         ],
-                       swig_opts=['-c++'],
+                       swig_opts=swig_opts,
                        extra_compile_args=extra_compile_args,
                        include_dirs=include_dirs,
                        libraries=libraries,
@@ -121,6 +151,13 @@ enclavemod = Extension('_poet_enclave',
 
 
 class Build(build_module.build):
+    # user_options = [
+    #     ('simulator', None, 'Build PoET enclave for SGX SDK simulator')
+    # ]
+    # def initialize_options(self):
+    #     super().initialize_options()
+    #     self.simulator = False
+
     def build_poet(self):
         print('Building PoET SGX module')
         if not os.path.exists("build"):
@@ -128,18 +165,21 @@ class Build(build_module.build):
         os.chdir("build")
 
         if os.name == 'nt':
-            args = ["-G", "Visual Studio 11 2012 Win64"]
+            config_args = ["-G", "Visual Studio 11 2012 Win64"]
         else:
-            args = ["-G", "Unix Makefiles"]
+            config_args = ["-G", "Unix Makefiles"]
 
-        subprocess.call(["cmake", ".."] + args)
+        # If asked to build SGX SDK simulator, add config option
+        if is_simulator_build:
+            config_args.extend(["-D", "SGX_USE_SIMULATOR:BOOL=ON"])
 
         if os.name == 'nt':
-            args = ["--config", "Release"]
+            build_args = ["--config", "Release"]
         else:
-            args = []
+            build_args = []
 
-        subprocess.call(["cmake", "--build", "."] + args)
+        subprocess.call(["cmake"] + config_args + [".."])
+        subprocess.call(["cmake", "--build", "."] + build_args)
 
         os.chdir("..")
 
@@ -157,7 +197,8 @@ if os.name == 'nt':
 else:
     conf_dir = "/etc/sawtooth"
 
-setup(name='sawtooth-poet-sgx',
+
+setup(name=package_name,
       version=version('0.8.4'),
       description='Sawtooth Lake PoET SGX Enclave',
       author='Intel Corporation',
@@ -188,12 +229,20 @@ if "clean" in sys.argv and "--all" in sys.argv:
     for filename in [".coverage",
                      "_poet_enclave{}".format(
                          sysconfig.get_config_var('EXT_SUFFIX')),
+                     "_poet_enclave_simulator{}".format(
+                         sysconfig.get_config_var('EXT_SUFFIX')),
                      "libpoet-bridge.so",
+                     "libpoet-bridge-simulator.so",
                      "libpoet-enclave.signed.so",
+                     "libpoet-enclave-simulator.signed.so",
                      os.path.join(
                          "sawtooth_poet_sgx",
                          "poet_enclave_sgx",
                          "poet_enclave.py"),
+                     os.path.join(
+                         "sawtooth_poet_sgx",
+                         "poet_enclave_sgx",
+                         "poet_enclave_simulator.py"),
                      os.path.join(
                          "sawtooth_poet_sgx",
                          "poet_enclave_sgx",

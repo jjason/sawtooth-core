@@ -15,7 +15,11 @@
 ------------------------------------------------------------------------------
 */
 
+#ifdef SGX_USE_SIMULATOR
+%module poet_enclave_simulator
+#else
 %module poet_enclave
+#endif
 
 %pythoncode %{
     import base64
@@ -174,7 +178,7 @@ def initialize(config_dir, data_dir):
         else:
             shared_library_ext = 'so'
         enclave_file_name = \
-            'libpoet-enclave.signed.{}'.format(shared_library_ext)
+            'libpoet-enclave-simulator.signed.{}'.format(shared_library_ext)
 
         sdir = os.path.abspath(os.path.dirname(os.path.realpath(__file__)))
         signed_enclave = os.path.join(sdir, enclave_file_name)
@@ -323,7 +327,7 @@ def create_signup_info(originator_public_key_hash, nonce):
 
     # If we are not running in the simulator, we are going to go and get
     # an attestation verification report for our signup data.
-    if not _is_sgx_simulator():
+    if not _is_sgx_simulator() or True:
         response = \
             _ias.post_verify_attestation(
                 quote=signup_data.enclave_quote,
